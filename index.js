@@ -18,8 +18,8 @@ const {
 
 const wallPad = 64;
 const loseHeight = 84;
-const statusBarHeight = 48;
-const previewBallHeight = 32;
+const statusBarHeight = 84;
+const previewBallHeight = 64;
 const friction = {
 	friction: 0.006,
 	frictionStatic: 0.006,
@@ -40,14 +40,24 @@ const Game = {
 	elements: {
 		canvas: document.getElementById('game-canvas'),
 		ui: document.getElementById('game-ui'),
+		menu: document.getElementById('menu-layer'),
+		startButton: document.getElementById('btn-start'),
+		restartButton: document.getElementById('btn-restart'),
 		score: document.getElementById('game-score'),
 		end: document.getElementById('game-end-container'),
+		endPanel: document.getElementById('game-end'),
 		endTitle: document.getElementById('game-end-title'),
+		endScore: document.getElementById('game-end-score'),
 		statusValue: document.getElementById('game-highscore-value'),
 		nextFruitImg: document.getElementById('game-next-fruit'),
+		nextOrb: document.querySelector('.next-orb'),
+		aimLine: document.getElementById('aim-line'),
+		dangerLine: document.getElementById('danger-line'),
 		previewBall: null,
 	},
 	cache: { highscore: 0 },
+	started: false,
+	scoreBumpTimer: null,
 	sounds: {
 		click: new Audio('./assets/click.mp3'),
 		pop0: new Audio('./assets/pop0.mp3'),
@@ -67,14 +77,38 @@ const Game = {
 
 	score: 0,
 	fruitsMerged: [],
+	playSound: function (name) {
+		const sound = Game.sounds[name];
+		if (!sound) return;
+
+		try {
+			const playback = sound.play();
+			if (playback && typeof playback.catch === 'function') {
+				playback.catch(() => {});
+			}
+		} catch (error) {
+			// Audio is optional; ignore autoplay restrictions.
+		}
+	},
 	calculateScore: function () {
 		const score = Game.fruitsMerged.reduce((total, count, sizeIndex) => {
 			const value = Game.fruitSizes[sizeIndex].scoreValue * count;
 			return total + value;
 		}, 0);
 
+		const gained = score !== Game.score;
 		Game.score = score;
-		Game.elements.score.innerText = Game.score;
+		Game.elements.score.innerText = score.toLocaleString('en-US');
+
+		if (gained && score > 0) {
+			clearTimeout(Game.scoreBumpTimer);
+			Game.elements.score.classList.remove('is-bump');
+			void Game.elements.score.offsetWidth;
+			Game.elements.score.classList.add('is-bump');
+			Game.scoreBumpTimer = setTimeout(() => {
+				Game.elements.score.classList.remove('is-bump');
+			}, 320);
+		}
 	},
 
 	fruitSizes: [
@@ -95,10 +129,16 @@ const Game = {
 	setNextFruitSize: function () {
 		Game.nextFruitSize = Math.floor(rand() * 5);
 		Game.elements.nextFruitImg.src = `./assets/img/circle${Game.nextFruitSize}.png`;
+
+		if (Game.elements.nextOrb) {
+			Game.elements.nextOrb.classList.remove('is-pop');
+			void Game.elements.nextOrb.offsetWidth;
+			Game.elements.nextOrb.classList.add('is-pop');
+		}
 	},
 
 	showHighscore: function () {
-		Game.elements.statusValue.innerText = Game.cache.highscore;
+		Game.elements.statusValue.innerText = Game.cache.highscore.toLocaleString('en-US');
 	},
 	loadHighscore: function () {
 		const gameCache = localStorage.getItem('suika-game-cache');
@@ -112,11 +152,18 @@ const Game = {
 	},
 	saveHighscore: function () {
 		Game.calculateScore();
-		if (Game.score < Game.cache.highscore) return;
+		Game.elements.endScore.innerText = Game.score.toLocaleString('en-US');
+
+		if (Game.score < Game.cache.highscore) {
+			Game.elements.endTitle.innerText = '游戏结束';
+			Game.elements.endPanel.classList.remove('is-record');
+			return;
+		}
 
 		Game.cache.highscore = Game.score;
 		Game.showHighscore();
-		Game.elements.endTitle.innerText = 'New Highscore!';
+		Game.elements.endTitle.innerText = '新纪录！';
+		Game.elements.endPanel.classList.add('is-record');
 
 		localStorage.setItem('suika-game-cache', JSON.stringify(Game.cache));
 	},
@@ -128,33 +175,53 @@ const Game = {
 		Composite.add(engine.world, menuStatics);
 
 		Game.loadHighscore();
-		Game.elements.ui.style.display = 'none';
 		Game.fruitsMerged = Array.apply(null, Array(Game.fruitSizes.length)).map(() => 0);
 
-		const menuMouseDown = function () {
-			if (mouseConstraint.body === null || mouseConstraint.body?.label !== 'btn-start') {
-				return;
-			}
+		Game.elements.startButton.addEventListener('click', Game.startGame);
+		Game.elements.restartButton.addEventListener('click', () => window.location.reload());
 
-			Events.off(mouseConstraint, 'mousedown', menuMouseDown);
-			Game.startGame();
-		}
+		Game.updateAimLine(Game.width / 2);
+	},
 
-		Events.on(mouseConstraint, 'mousedown', menuMouseDown);
+	updateAimLine: function (x) {
+		const previewBall = Game.elements.previewBall;
+		const aimLine = Game.elements.aimLine;
+		if (!previewBall || !aimLine) return;
+
+		const r = previewBall.circleRadius;
+		const lineX = Math.max(r, Math.min(Game.width - r, x));
+		const top = previewBall.position.y + r + 6;
+
+		aimLine.style.left = `${lineX}px`;
+		aimLine.style.top = `${top}px`;
+		aimLine.style.height = `${Math.max(0, Game.height - statusBarHeight - top)}px`;
+	},
+
+	getSpawnY: function (sizeIndex) {
+		return Math.max(previewBallHeight, Game.fruitSizes[sizeIndex].radius + 8);
 	},
 
 	startGame: function () {
-		Game.sounds.click.play();
+		if (Game.started) return;
+		Game.started = true;
+
+		Game.playSound('click');
 
 		Composite.remove(engine.world, menuStatics);
 		Composite.add(engine.world, gameStatics);
 
 		Game.calculateScore();
-		Game.elements.endTitle.innerText = 'Game Over!';
-		Game.elements.ui.style.display = 'block';
+		Game.elements.endTitle.innerText = '游戏结束';
+		Game.elements.endPanel.classList.remove('is-record');
+		Game.elements.endScore.innerText = '0';
 		Game.elements.end.style.display = 'none';
-		Game.elements.previewBall = Game.generateFruitBody(Game.width / 2, previewBallHeight, 0, { isStatic: true });
+		Game.elements.ui.classList.add('is-playing');
+		Game.elements.previewBall = Game.generateFruitBody(Game.width / 2, Game.getSpawnY(0), 0, {
+			isStatic: true,
+			collisionFilter: { mask: 0x0040 }
+		});
 		Composite.add(engine.world, Game.elements.previewBall);
+		Game.updateAimLine(Game.width / 2);
 
 		setTimeout(() => {
 			Game.stateIndex = GameStates.READY;
@@ -165,10 +232,14 @@ const Game = {
 		});
 
 		Events.on(mouseConstraint, 'mousemove', function (e) {
-			if (Game.stateIndex !== GameStates.READY) return;
+			if (Game.stateIndex === GameStates.LOSE) return;
 			if (Game.elements.previewBall === null) return;
 
-			Game.elements.previewBall.position.x = e.mouse.position.x;
+			const r = Game.elements.previewBall.circleRadius;
+			const x = Math.max(r, Math.min(Game.width - r, e.mouse.position.x));
+
+			Game.elements.previewBall.position.x = x;
+			Game.updateAimLine(x);
 		});
 
 		Events.on(engine, 'collisionStart', function (e) {
@@ -209,7 +280,7 @@ const Game = {
 				bodyA.popped = true;
 				bodyB.popped = true;
 
-				Game.sounds[`pop${bodyA.sizeIndex}`].play();
+				Game.playSound(`pop${bodyA.sizeIndex}`);
 				Composite.remove(engine.world, [bodyA, bodyB]);
 				Composite.add(engine.world, Game.generateFruitBody(midPosX, midPosY, newSize));
 				Game.addPop(midPosX, midPosY, bodyA.circleRadius);
@@ -239,7 +310,10 @@ const Game = {
 	},
 
 	loseGame: function () {
+		if (Game.stateIndex === GameStates.LOSE) return;
+
 		Game.stateIndex = GameStates.LOSE;
+		Game.elements.ui.classList.add('is-lost');
 		Game.elements.end.style.display = 'flex';
 		runner.enabled = false;
 		Game.saveHighscore();
@@ -270,10 +344,14 @@ const Game = {
 	addFruit: function (x) {
 		if (Game.stateIndex !== GameStates.READY) return;
 
-		Game.sounds.click.play();
+		Game.playSound('click');
+
+		const radius = Game.fruitSizes[Game.currentFruitSize].radius;
+		const dropX = Math.max(radius, Math.min(Game.width - radius, x));
+		const dropY = Game.getSpawnY(Game.currentFruitSize);
 
 		Game.stateIndex = GameStates.DROP;
-		const latestFruit = Game.generateFruitBody(x, previewBallHeight, Game.currentFruitSize);
+		const latestFruit = Game.generateFruitBody(dropX, dropY, Game.currentFruitSize);
 		Composite.add(engine.world, latestFruit);
 
 		Game.currentFruitSize = Game.nextFruitSize;
@@ -281,10 +359,14 @@ const Game = {
 		Game.calculateScore();
 
 		Composite.remove(engine.world, Game.elements.previewBall);
-		Game.elements.previewBall = Game.generateFruitBody(render.mouse.position.x, previewBallHeight, Game.currentFruitSize, {
+
+		const nextRadius = Game.fruitSizes[Game.currentFruitSize].radius;
+		const nextX = Math.max(nextRadius, Math.min(Game.width - nextRadius, render.mouse.position.x));
+		Game.elements.previewBall = Game.generateFruitBody(nextX, Game.getSpawnY(Game.currentFruitSize), Game.currentFruitSize, {
 			isStatic: true,
 			collisionFilter: { mask: 0x0040 }
 		});
+		Game.updateAimLine(nextX);
 
 		setTimeout(() => {
 			if (Game.stateIndex === GameStates.DROP) {
@@ -304,40 +386,11 @@ const render = Render.create({
 		width: Game.width,
 		height: Game.height,
 		wireframes: false,
-		background: '#ffdcae'
+		background: 'transparent'
 	}
 });
 
-const menuStatics = [
-	Bodies.rectangle(Game.width / 2, Game.height * 0.4, 512, 512, {
-		isStatic: true,
-		render: { sprite: { texture: './assets/img/bg-menu.png' } },
-	}),
-
-	// Add each fruit in a circle
-	...Array.apply(null, Array(Game.fruitSizes.length)).map((_, index) => {
-		const x = (Game.width / 2) + 192 * Math.cos((Math.PI * 2 * index)/12);
-		const y = (Game.height * 0.4) + 192 * Math.sin((Math.PI * 2 * index)/12);
-		const r = 64;
-
-		return Bodies.circle(x, y, r, {
-			isStatic: true,
-			render: {
-				sprite: {
-					texture: `./assets/img/circle${index}.png`,
-					xScale: r / 1024,
-					yScale: r / 1024,
-				},
-			},
-		});
-	}),
-
-	Bodies.rectangle(Game.width / 2, Game.height * 0.75, 512, 96, {
-		isStatic: true,
-		label: 'btn-start',
-		render: { sprite: { texture: './assets/img/btn-start.png' } },
-	}),
-];
+const menuStatics = [];
 
 const wallProps = {
 	isStatic: true,
@@ -372,30 +425,29 @@ render.mouse = mouse;
 Game.initGame();
 
 const resizeCanvas = () => {
-	const screenWidth = document.body.clientWidth;
-	const screenHeight = document.body.clientHeight;
+	const isCompact = window.matchMedia('(max-width: 720px)').matches;
+	const padding = isCompact ? 10 : 24;
+	const viewportWidth = Math.max(0, document.documentElement.clientWidth - padding);
+	const viewportHeight = Math.max(0, document.documentElement.clientHeight - padding);
+	const scale = Math.min(viewportWidth / Game.width, viewportHeight / Game.height, 1);
 
-	let newWidth = Game.width;
-	let newHeight = Game.height;
-	let scaleUI = 1;
-
-	if (screenWidth * 1.5 > screenHeight) {
-		newHeight = Math.min(Game.height, screenHeight);
-		newWidth = newHeight / 1.5;
-		scaleUI = newHeight / Game.height;
-	} else {
-		newWidth = Math.min(Game.width, screenWidth);
-		newHeight = newWidth * 1.5;
-		scaleUI = newWidth / Game.width;
-	}
+	const newWidth = Game.width * scale;
+	const newHeight = Game.height * scale;
 
 	render.canvas.style.width = `${newWidth}px`;
 	render.canvas.style.height = `${newHeight}px`;
 
 	Game.elements.ui.style.width = `${Game.width}px`;
 	Game.elements.ui.style.height = `${Game.height}px`;
-	Game.elements.ui.style.transform = `scale(${scaleUI})`;
+	Game.elements.ui.style.transform = `scale(${scale})`;
+
+	if (Game.elements.dangerLine) {
+		Game.elements.dangerLine.style.top = `${loseHeight * scale}px`;
+		Game.elements.dangerLine.style.setProperty('--ui-scale', scale);
+	}
 };
 
-document.body.onload = resizeCanvas;
-document.body.onresize = resizeCanvas;
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', resizeCanvas);
+window.addEventListener('load', resizeCanvas);
